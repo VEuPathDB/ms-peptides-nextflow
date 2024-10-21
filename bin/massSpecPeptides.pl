@@ -6,33 +6,81 @@ use Getopt::Long;
 
 use Bio::SeqIO;
 
+use Bio::Tools::GFF;
+
 use Data::Dumper;
 
-my ($sampleFile, $outputFile, $proteinFastaFile);
+my ($sampleFile, $outputFile, $proteinFastaFile, $minPeptidePct, $proteinGff);
 
 &GetOptions ("sampleFile=s" => \$sampleFile,
              "proteinFastaFile=s" => \$proteinFastaFile,
              "outputFile=s" => \$outputFile,
+             "recordMinPeptidePct=i" => \$minPeptidePct,
+             "outputProteinGffFile=s" => \$proteinGff,
     );
 
+
+$minPeptidePct = $minPeptidePct ? $minPeptidePct : 50;
+
+my $GFF_SOURCE = "veupathdb";
+
+open (my $proteinGffFh, ">$proteinGff") or die "Cannot open $proteinGff file for writing: $!";
 
 my ($recordSet, $peptideSequencesToRecords) = &parseSampleFile($sampleFile);
 
 my $seqio = Bio::SeqIO->new(-file => $proteinFastaFile, -format => 'fasta');
 
+my $proteinCount;
+
 while (my $seq = $seqio->next_seq) {
-  my ($bestRecord) = &searchProteinSeq($seq, $recordSet, $peptideSequencesToRecords);
 
-  #&proteinGff($bestRecord)
-  #&genomeGff($bestRecord)
+  my $msRecordWithPeptideLocations = &searchProteinSeq($seq, $recordSet, $peptideSequencesToRecords);
 
-  #&writeMSTabOutput($bestRecord)
-  #&writeMSResiduesTabOutput($bestRecord)
-  exit;
+
+
+  &writeOutput($proteinGffFh, $msRecordWithPeptideLocations, $seq);
+  #&genomeGff($msRecordWithPeptideLocations)
+
+  #&writeMSTabOutput($msRecordWithPeptideLocations)
+  #&writeMSResiduesTabOutput($msRecordWithPeptideLocations)
+
+  if($proteinCount++ % 500 == 0) {
+    print STDERR "Processed $proteinCount Proteins", "\n";
+  }
+
 }
 
-#print Dumper $recordSet;
-#print Dumper $peptideSequencesToRecords;
+sub writeOutput {
+  my ($proteinGffFh, $record, $seq) = @_;
+
+  foreach my $peptide (@{$record->{peptides}}) {
+    my $peptideSequence = $peptide->get("sequence");
+
+    my $ionsScore = $peptide->get("ions_score");
+    my $spectrumCount = $peptide->get("spectrum_count");
+
+    my $peptideLocations = $record->{peptideLocations}->{$peptideSequence};
+    foreach my $location (@{$peptideLocations}) {
+
+      my $peptide = new Bio::SeqFeature::Generic(
+        -start      => $location->[0],
+        -end        => $location->[1],
+        -strand     => ".",
+        -primary    => 'ms_peptide',
+        -source_tag => $GFF_SOURCE,
+        -seq_id     => $seq->id(),
+        -tag        => {
+          ions_score => $ionsScore,
+          spectrum_count => $spectrumCount,
+        });
+
+      $peptide->gff_format(Bio::Tools::GFF->new(-gff_version => 3));
+
+      print $proteinGffFh $peptide->gff_string(), "\n";
+    }
+  }
+}
+
 
 sub searchProteinSeq {
   my ($seq, $recordSet, $peptideSequencesToRecords) = @_;
@@ -47,37 +95,63 @@ sub searchProteinSeq {
   my $geneId = $proteinAtts{gene};
   my $seqString = $seq->seq();
 
-  my ($matchingRecords, $peptideLocations);
+  my ($matchingRecords, $peptideLocations, $bestMatch);
 
-  # if the id from the record matches this gene then we only need to deal with the peptides
-  # from the record.
+  # NOTE: if the id from the record matches this gene then we only need to deal
+  # with the peptides from the record.
   if(my $records = $recordSet->{$geneId}) {
+    die "";
     my $peptides = &getPeptidesFromRecords($records);
     $peptideLocations = &mapPeptidesToProtein($seqString, $peptides);
     $matchingRecords = $records;
+
+    $bestMatch = &findBestRecord($matchingRecords, $peptideLocations, $minPeptidePct);
   }
+
+  # NOTE: if we were able to find a match using the id mapping then we're done
   # otherwise we need to try to map all peptides to this protein
-  else {
+  unless($bestMatch) {
+
     $peptideLocations = &mapPeptidesToProtein($seqString, $peptideSequencesToRecords);
     $matchingRecords = &getRecordsFromPeptideSubset($peptideLocations, $peptideSequencesToRecords);
 
+    # NOTE: here we require 100% peptide matches
+    $bestMatch = &findBestRecord($matchingRecords, $peptideLocations, 100);
   }
 
-  my $bestMatch = &bestMatchByPeptideCount($matchingRecords, $peptideLocations);
-
-  #NOTE: why a copy here?
-  # return copyOfbestRecordWithPeptideAlignments
+  return &cloneAndAddPeptideLocations($bestMatch, $peptideLocations);
 }
 
-sub bestMatchByPeptideCount {
-  my ($matchingRecords, $peptideLocations) = @_;
 
-  my $res;
+sub cloneAndAddPeptideLocations {
+  my ($record, $peptideLocations) = @_;
 
-  my $bestCount = 0;
+  return unless($record);
+
+  # make a copy of the MSRecord
+  my $clone = $record->clone();
+
+  my $peptideCount = scalar @{$clone->{peptides}};
+
+  foreach my $peptide (@{$clone->{peptides}}) {
+    my $peptideSequence = $peptide->get("sequence");
+
+    foreach my $location (@{$peptideLocations->{$peptideSequence}}) {
+      push @{$clone->{peptideLocations}->{$peptideSequence}}, $location;
+    }
+  }
+  return $clone;
+}
+
+
+sub findBestRecord {
+  my ($matchingRecords, $peptideLocations, $minPeptidePct) = @_;
+
+  my @results;
 
   foreach my $record (@$matchingRecords) {
     my $count = 0;
+    my $peptideCount = scalar @{$record->{peptides}};
 
     foreach my $peptide (@{$record->{peptides}}) {
       my $peptideSequence = $peptide->get("sequence");
@@ -85,21 +159,30 @@ sub bestMatchByPeptideCount {
       $count++ if($peptideLocations->{$peptideSequence});
     }
 
-    if($count > $bestCount) {
-      $res = $record;
-      $bestCount = $count;
+    my $matchPct = ($count / $peptideCount) * 100;
+
+    if($matchPct >= $minPeptidePct) {
+
+      # NOTE: Use count here, not the pct
+      push @results, [$count, $record];
     }
   }
-  return $res;
+
+  return unless scalar @results > 0;
+
+  my @sorted = sort { $b->[0] <=> $a->[0]} @results;
+
+
+  # NOTE:  we are returning the record which has the highest
+  # number of peptides matching above our minPeptidePct threshold
+  return $sorted[0]->[1];
 }
 
 
 sub getRecordsFromPeptideSubset {
   my ($peptideLocations, $peptideSequencesToRecords) = @_;
 
-  my @res;
-
-  my %seen;
+  my (@res, %seen);
 
   foreach my $peptide (keys %$peptideLocations) {
     foreach my $record (@{$peptideSequencesToRecords->{$peptide}}) {
@@ -120,7 +203,6 @@ sub getRecordsFromPeptideSubset {
 sub mapPeptidesToProtein {
   my ($seqString, $peptides) = @_;
 
-
   my %res;
 
   foreach my $peptide (keys %$peptides) {
@@ -128,13 +210,14 @@ sub mapPeptidesToProtein {
 
     my $pepLength = scalar $peptide;
 
-    while ($seqString =~ /(?=$pattern)/g) {
+    while ($seqString =~ /$pattern/g) {
       my $start = pos($seqString) + 1;
-      my $end = $start + $pepLength;
+      my $end = $start + $pepLength + 0;
 
       push @{$res{$peptide}}, [$start, $end];
     }
   }
+
   return \%res;
 }
 
@@ -194,12 +277,12 @@ sub parseSampleFile {
       $peptide = MSPeptide->new($_);
       my $peptideSequence = $peptide->get("sequence");
       if(!$peptideSequence || $peptideSequence =~ /\d/) {
-        next;# TODO:  should die here instead
+        next;# TODO:  why not die here instead??
       }
       $record->addPeptide($peptide);
       # NOTE:  I'm allowing for multiple records having the same id here
       # This shouldnt' happen but some of the input files used alias mappings so it might?
-      push @{$peptideSequencesToRecords{$peptideSequence}}, $record->get("sourceId");
+      push @{$peptideSequencesToRecords{$peptideSequence}}, $record;
     } elsif($state eq 'residue') {
       $residue = MSResidue->new($_);
       $peptide->addResidue($residue);
@@ -209,7 +292,7 @@ sub parseSampleFile {
   }
   close F;
 
-  return $recordSet, %peptideSequencesToRecords;
+  return $recordSet, \%peptideSequencesToRecords;
 }
 
 1;
@@ -275,6 +358,13 @@ sub initRecord {
   ) = split "\t", $ln;
 
   return $self;
+}
+
+
+# NOTE:  the peptide objects will NOT be copies. they will be the existing references
+sub clone {
+    my $self = shift;
+    return bless { %$self }, ref $self;
 }
 
 1;

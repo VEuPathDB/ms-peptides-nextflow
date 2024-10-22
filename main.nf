@@ -28,6 +28,11 @@ process massSpecPeptides {
 
   script:
   """
-  massSpecPeptides.pl --sampleFile $sample --outputFile temp
+  massSpecPeptides.pl \
+   --sampleFile $sample \
+   --outputFile temp \
+   --proteinFastaFile $params.proteinFastaFile \
+   --recordMinPeptidePct 50 \
+   --outputProteinGffFile peptides.gff
   """
 }

@@ -208,11 +208,11 @@ sub mapPeptidesToProtein {
   foreach my $peptide (keys %$peptides) {
     my $pattern = quotemeta($peptide);
 
-    my $pepLength = scalar $peptide;
+    my $pepLength = length $peptide;
 
     while ($seqString =~ /$pattern/g) {
-      my $start = pos($seqString) + 1;
-      my $end = $start + $pepLength + 0;
+      my $end = pos($seqString) + 0;
+      my $start = $end - $pepLength + 1;
 
       push @{$res{$peptide}}, [$start, $end];
     }

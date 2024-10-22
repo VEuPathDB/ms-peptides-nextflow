@@ -100,7 +100,6 @@ sub searchProteinSeq {
   # NOTE: if the id from the record matches this gene then we only need to deal
   # with the peptides from the record.
   if(my $records = $recordSet->{$geneId}) {
-    die "";
     my $peptides = &getPeptidesFromRecords($records);
     $peptideLocations = &mapPeptidesToProtein($seqString, $peptides);
     $matchingRecords = $records;

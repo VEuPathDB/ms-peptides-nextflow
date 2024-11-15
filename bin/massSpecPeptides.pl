@@ -8,15 +8,20 @@ use Bio::SeqIO;
 
 use Bio::Tools::GFF;
 
+use Bio::Coordinate::GeneMapper;
+
 use Data::Dumper;
 
-my ($sampleFile, $outputFile, $proteinFastaFile, $minPeptidePct, $proteinGff);
+my ($sampleFile, $outputFile, $genomicGff, $proteinFastaFile, $minPeptidePct, $proteinGff, $inputGenomeGff, $sampleName);
 
 &GetOptions ("sampleFile=s" => \$sampleFile,
              "proteinFastaFile=s" => \$proteinFastaFile,
              "outputFile=s" => \$outputFile,
              "recordMinPeptidePct=i" => \$minPeptidePct,
              "outputProteinGffFile=s" => \$proteinGff,
+             "outputGenomicGffFile=s" => \$genomicGff,
+             "inputGenomeGff=s" => \$inputGenomeGff,
+             "sampleName=s" => \$sampleName
     );
 
 
@@ -24,25 +29,60 @@ $minPeptidePct = $minPeptidePct ? $minPeptidePct : 50;
 
 my $GFF_SOURCE = "veupathdb";
 
+my ($transcriptLocations, $proteinToTranscriptMap) = &makeProteinGenomeCoordinatesHash($inputGenomeGff);
+
 open (my $proteinGffFh, ">$proteinGff") or die "Cannot open $proteinGff file for writing: $!";
+
+open (my $genomicGffFh, ">$genomicGff") or die "Cannot open $genomicGff file for writing: $!";
 
 my ($recordSet, $peptideSequencesToRecords) = &parseSampleFile($sampleFile);
 
 my $seqio = Bio::SeqIO->new(-file => $proteinFastaFile, -format => 'fasta');
 
 my $proteinCount;
+my $seenGenomicCoords = {}; # keep track of unique genmic coords for a protein
 
 while (my $seq = $seqio->next_seq) {
 
   my $msRecordWithPeptideLocations = &searchProteinSeq($seq, $recordSet, $peptideSequencesToRecords);
 
+  &writeProteinGffOutput($proteinGffFh, $msRecordWithPeptideLocations, $seq, $sampleName);
+
+  my $proteinId = $seq->id();
+  my $transcriptId = $proteinToTranscriptMap->{$proteinId};
+  my $locations = $transcriptLocations->{$transcriptId};
+
+  my ($genomicSequenceSourceId, $mapper) = &getProteinToGenomicCoordMapper($locations);
+
+  &writeGenomeGffOutput($genomicGffFh, $msRecordWithPeptideLocations, $genomicSequenceSourceId, $mapper, $sampleName);
 
 
-  &writeOutput($proteinGffFh, $msRecordWithPeptideLocations, $seq);
-  #&genomeGff($msRecordWithPeptideLocations)
 
   #&writeMSTabOutput($msRecordWithPeptideLocations)
   #&writeMSResiduesTabOutput($msRecordWithPeptideLocations)
+
+# SELECT * FROM apidbtuning.mspeptidesummary;
+#   protein_id
+#   peptide_sequence
+#   sample
+#   spectrum_count
+#   aa_start_min
+#   aa_end_max
+
+
+# ;
+# SELECT * FROM apidbtuning.MSMODIFIEDPEPTIDESUMMARY;
+#  protein_id
+#  peptide_sequence
+#  sample
+#  residue
+#  modification_type
+#  spectrum_count
+#  residue_location
+#  aa_start_min
+#  aa_end_max
+
+
 
   if($proteinCount++ % 500 == 0) {
     print STDERR "Processed $proteinCount Proteins", "\n";
@@ -50,8 +90,92 @@ while (my $seq = $seqio->next_seq) {
 
 }
 
-sub writeOutput {
-  my ($proteinGffFh, $record, $seq) = @_;
+sub makeProteinGenomeCoordinatesHash {
+  my ($gff) = @_;
+
+  my %transcriptLocations;
+  my %proteinToTranscriptMap;
+
+  my $parser = Bio::Tools::GFF->new(-gff_version => 3,
+                                    -file        => $gff);
+
+  while(my $feature = $parser->next_feature()) {
+    my $primaryTag = $feature->primary_tag();
+
+    next unless($primaryTag eq 'CDS' || $primaryTag eq 'exon');
+
+    # parent for exon and cds rows is the transcript
+    # which we can use to join them
+    my ($parentId) = $feature->get_tag_values("Parent");
+    my $start = $feature->start();
+    my $end = $feature->end();
+    my $strand = $feature->strand();
+    my $seqId = $feature->seq_id();
+
+    my $loc = [$start, $end, $strand];
+
+    if($primaryTag eq 'CDS') {
+      my ($proteinId) = $feature->get_tag_values("protein_source_id");
+
+      $proteinToTranscriptMap{$proteinId} = $parentId;
+
+      push @{$transcriptLocations{$parentId}->{cds}}, $loc;
+      $transcriptLocations{$parentId}->{seq_id} = $seqId;
+    }
+
+    if($primaryTag eq 'exon') {
+      push @{$transcriptLocations{$parentId}->{exon}}, $loc;
+    }
+  }
+
+  return \%transcriptLocations, \%proteinToTranscriptMap;
+}
+
+sub writeGenomeGffOutput {
+  my ($genomicGffFh, $record, $genomicSequenceSourceId, $mapper, $sampleName) = @_;
+
+  foreach my $peptide (@{$record->{peptides}}) {
+    my $peptideSequence = $peptide->get("sequence");
+    my $ionsScore = $peptide->get("ions_score");
+    my $spectrumCount = $peptide->get("spectrum_count");
+
+    my $peptideLocations = $record->{peptideLocations}->{$peptideSequence};
+    foreach my $location (@{$peptideLocations}) {
+
+      my $peptideCoords = Bio::Location::Simple->new (-start => $location->[0],
+                                                      -end   => $location->[1]
+          );
+
+      my $map = $mapper->map($peptideCoords);
+      return undef if ! $map;
+
+      foreach (sort { $a->start <=> $b->start } $map->each_Location ) {
+
+        my $genomicPeptide = new Bio::SeqFeature::Generic(
+          -start      => $_->start,
+          -end        => $_->end,
+          -strand     => $_->strand,
+          -primary    => 'ms_peptide',
+          -source_tag => $GFF_SOURCE,
+          -seq_id     => $genomicSequenceSourceId,
+          -tag        => {
+            ions_score => $ionsScore,
+            spectrum_count => $spectrumCount,
+            sample_name => $sampleName,
+            peptide => $peptideSequence,
+          });
+
+        $genomicPeptide->gff_format(Bio::Tools::GFF->new(-gff_version => 3));
+
+        print $genomicGffFh $genomicPeptide->gff_string(), "\n";
+      }
+    }
+  }
+
+}
+
+sub writeProteinGffOutput {
+  my ($proteinGffFh, $record, $seq, $sampleName) = @_;
 
   foreach my $peptide (@{$record->{peptides}}) {
     my $peptideSequence = $peptide->get("sequence");
@@ -72,6 +196,7 @@ sub writeOutput {
         -tag        => {
           ions_score => $ionsScore,
           spectrum_count => $spectrumCount,
+          sample_name => $sampleName
         });
 
       $peptide->gff_format(Bio::Tools::GFF->new(-gff_version => 3));
@@ -293,6 +418,66 @@ sub parseSampleFile {
 
   return $recordSet, \%peptideSequencesToRecords;
 }
+
+
+sub getProteinToGenomicCoordMapper {
+  my ($locations) = @_;
+
+  my ($sequenceSourceId, $exonLocs, $cdsRange) = &getExonLocsAndCdsRangeFromLocations($locations);
+
+  my $mapper = Bio::Coordinate::GeneMapper->new(
+    -in    => 'peptide',
+    -out   => 'chr',
+    -exons => $exonLocs,
+    -cds => $cdsRange
+      );
+
+  return $sequenceSourceId, $mapper;
+}
+
+
+sub getExonLocsAndCdsRangeFromLocations {
+  my ($locations) = @_;
+
+  my $naSequenceSourceId = $locations->{seq_id};
+
+  my ($minCds, $maxCds, $strand);
+
+  my @exonLocs;
+
+  foreach my $exon (@{$locations->{exon}}) {
+    my $exonLoc = Bio::Location::Simple->new( -seq_id => $naSequenceSourceId,
+                                              -start => $exon->[0],
+                                              -end => $exon->[1],
+                                              -strand => $exon->[2]);
+
+    push @exonLocs, $exonLoc;
+  }
+
+  foreach my $cds (@{$locations->{cds}}) {
+    # init min and max w/ first value
+    $minCds = $cds->[0] unless($minCds);
+    $maxCds = $cds->[0] unless($maxCds);
+
+    my ($min, $max) = sort {$a <=> $b} ($cds->[0], $cds->[1]);
+
+    $minCds = $min if($min < $minCds);
+    $maxCds = $max if($max > $maxCds);
+
+    #used for exon and cds
+    $strand = $cds->[2]
+
+  }
+
+  my $cdsRange = Bio::Location::Simple->new( -seq_id => $naSequenceSourceId,
+                                             -start => $minCds,
+                                             -end => $maxCds,
+                                             -strand => $strand);
+
+
+  return($naSequenceSourceId, \@exonLocs, $cdsRange);
+}
+
 
 1;
 

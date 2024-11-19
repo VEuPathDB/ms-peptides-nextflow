@@ -359,7 +359,7 @@ sub getPeptidesFromRecords {
   my %peptides;
 
   foreach my $record (@$records) {
-    foreach my $peptide ({$record->{peptides}}) {
+    foreach my $peptide (@{$record->{peptides}}) {
 
       my $peptideSequence = $peptide->get("sequence");
       $peptides{$peptideSequence}++;

@@ -185,9 +185,9 @@ sub writeProteinGffOutput {
         my $relativePosition = $residue->get("relative_position");
         my $modificationType = $residue->get("modification_type");
 
-        my $residueLocation = $pepStart + $relativePosition - 1;
+        my $residueLocation = $pepStart + $relativePosition;
 
-        my $residue = substr($peptideSequence, $relativePosition - 1, 1);
+        my $residue = substr($peptideSequence, $relativePosition, 1);
 
         my $residueId =  "${sampleName}_${protein}_${pepStart}_${pepEnd}_r${residueLocation}";
 
@@ -202,6 +202,7 @@ sub writeProteinGffOutput {
             sample_name => $sampleName,
             Parent => $peptideId,
             ID => $residueId,
+            residue => $residue,
             modification_type => $modificationType,
             relative_position => $relativePosition
           });

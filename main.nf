@@ -6,7 +6,11 @@ nextflow.enable.dsl=2
 //--------------------------------------------------------------------------
 
 if(params.inputDirectory) {
-  samples = Channel.fromPath( params.inputDirectory + "/life_cycle_nature01107-Gmt.tab" )
+  samples = Channel.fromPath( params.inputDirectory + "/*" )
+    .map { file ->
+      def basename = file.getBaseName()
+      return tuple(basename, file)
+    }
 }
 else {
   throw new Exception("Missing params.inputDirectory")
@@ -24,15 +28,25 @@ process massSpecPeptides {
   container = 'bioperl/bioperl:stable'
 
   input:
-    path sample
+  tuple val(sampleName), path(sampleFile)
 
   script:
   """
   massSpecPeptides.pl \
-   --sampleFile $sample \
-   --outputFile temp \
+   --sampleFile $sampleFile \
+   --outputProteinGffFile peptides_protein_align.gff \
+   --outputGenomicGffFile peptides_genome_align.gff \
    --proteinFastaFile $params.proteinFastaFile \
    --recordMinPeptidePct 50 \
-   --outputProteinGffFile peptides.gff
+   --inputAnnotationGff $params.annotationGff
+   --sampleName $sampleName
   """
+
+
+
+
+
+
+
+
 }

@@ -12,15 +12,14 @@ use Bio::Coordinate::GeneMapper;
 
 use Data::Dumper;
 
-my ($sampleFile, $outputFile, $genomicGff, $proteinFastaFile, $minPeptidePct, $proteinGff, $inputGenomeGff, $sampleName);
+my ($sampleFile, $genomicGff, $proteinFastaFile, $minPeptidePct, $proteinGff, $inputAnnotationGff, $sampleName);
 
 &GetOptions ("sampleFile=s" => \$sampleFile,
              "proteinFastaFile=s" => \$proteinFastaFile,
-             "outputFile=s" => \$outputFile,
              "recordMinPeptidePct=i" => \$minPeptidePct,
              "outputProteinGffFile=s" => \$proteinGff,
              "outputGenomicGffFile=s" => \$genomicGff,
-             "inputGenomeGff=s" => \$inputGenomeGff,
+             "inputAnnotationGff=s" => \$inputAnnotationGff,
              "sampleName=s" => \$sampleName
     );
 
@@ -29,7 +28,7 @@ $minPeptidePct = $minPeptidePct ? $minPeptidePct : 50;
 
 my $GFF_SOURCE = "veupathdb";
 
-my ($transcriptLocations, $proteinToTranscriptMap) = &makeProteinGenomeCoordinatesHash($inputGenomeGff);
+my ($transcriptLocations, $proteinToTranscriptMap) = &makeProteinGenomeCoordinatesHash($inputAnnotationGff);
 
 open (my $proteinGffFh, ">$proteinGff") or die "Cannot open $proteinGff file for writing: $!";
 
@@ -55,34 +54,6 @@ while (my $seq = $seqio->next_seq) {
   my ($genomicSequenceSourceId, $mapper) = &getProteinToGenomicCoordMapper($locations);
 
   &writeGenomeGffOutput($genomicGffFh, $msRecordWithPeptideLocations, $genomicSequenceSourceId, $mapper, $sampleName);
-
-
-
-  #&writeMSTabOutput($msRecordWithPeptideLocations)
-  #&writeMSResiduesTabOutput($msRecordWithPeptideLocations)
-
-# SELECT * FROM apidbtuning.mspeptidesummary;
-#   protein_id
-#   peptide_sequence
-#   sample
-#   spectrum_count
-#   aa_start_min
-#   aa_end_max
-
-
-# ;
-# SELECT * FROM apidbtuning.MSMODIFIEDPEPTIDESUMMARY;
-#  protein_id
-#  peptide_sequence
-#  sample
-#  residue
-#  modification_type
-#  spectrum_count
-#  residue_location
-#  aa_start_min
-#  aa_end_max
-
-
 
   if($proteinCount++ % 500 == 0) {
     print STDERR "Processed $proteinCount Proteins", "\n";
@@ -177,6 +148,8 @@ sub writeGenomeGffOutput {
 sub writeProteinGffOutput {
   my ($proteinGffFh, $record, $seq, $sampleName) = @_;
 
+  my $protein = $seq->id();
+
   foreach my $peptide (@{$record->{peptides}}) {
     my $peptideSequence = $peptide->get("sequence");
 
@@ -185,23 +158,58 @@ sub writeProteinGffOutput {
 
     my $peptideLocations = $record->{peptideLocations}->{$peptideSequence};
     foreach my $location (@{$peptideLocations}) {
+      my $pepStart = $location->[0];
+      my $pepEnd = $location->[1];
+      my $peptideId = "${sampleName}_${protein}_${pepStart}_${pepEnd}";
 
-      my $peptide = new Bio::SeqFeature::Generic(
-        -start      => $location->[0],
-        -end        => $location->[1],
+      my $peptideFeature = new Bio::SeqFeature::Generic(
+        -start      => $pepStart,
+        -end        => $pepEnd,
         -strand     => ".",
         -primary    => 'ms_peptide',
         -source_tag => $GFF_SOURCE,
-        -seq_id     => $seq->id(),
+        -seq_id     => $protein,
         -tag        => {
           ions_score => $ionsScore,
           spectrum_count => $spectrumCount,
-          sample_name => $sampleName
+          peptide => $peptideSequence,
+          sample_name => $sampleName,
+          ID => $peptideId
         });
 
-      $peptide->gff_format(Bio::Tools::GFF->new(-gff_version => 3));
+      $peptideFeature->gff_format(Bio::Tools::GFF->new(-gff_version => 3));
 
-      print $proteinGffFh $peptide->gff_string(), "\n";
+      print $proteinGffFh $peptideFeature->gff_string(), "\n";
+
+      foreach my $residue (@{$peptide->{residues}}) {
+        my $relativePosition = $residue->get("relative_position");
+        my $modificationType = $residue->get("modification_type");
+
+        my $residueLocation = $pepStart + $relativePosition - 1;
+
+        my $residue = substr($peptideSequence, $relativePosition - 1, 1);
+
+        my $residueId =  "${sampleName}_${protein}_${pepStart}_${pepEnd}_r${residueLocation}";
+
+        my $residueFeature = new Bio::SeqFeature::Generic(
+          -start      => $residueLocation,
+          -end        => $residueLocation,
+          -strand     => ".",
+          -primary    => 'ms_residue',
+          -source_tag => $GFF_SOURCE,
+          -seq_id     => $protein,
+          -tag        => {
+            sample_name => $sampleName,
+            Parent => $peptideId,
+            ID => $residueId,
+            modification_type => $modificationType,
+            relative_position => $relativePosition
+          });
+
+        $residueFeature->gff_format(Bio::Tools::GFF->new(-gff_version => 3));
+
+        print $proteinGffFh $residueFeature->gff_string(), "\n";
+      }
     }
   }
 }
@@ -587,6 +595,8 @@ sub initRecord {
 
     $self->{spectrum_count}
   ) = split "\t", $ln;
+
+  $self->{residues} = [];
 
   die "missing pep spectrum_count" unless($self->{spectrum_count});
   return $self;

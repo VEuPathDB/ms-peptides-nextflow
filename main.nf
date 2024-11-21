@@ -32,7 +32,7 @@ workflow {
 }
 
 process massSpecPeptides {
-  container = 'bioperl/bioperl:stable'
+  container = 'veupathdb/bioperl:latest'
 
   input:
   tuple val(sampleName), path(sampleFile)

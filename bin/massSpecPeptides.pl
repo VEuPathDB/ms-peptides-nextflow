@@ -292,6 +292,8 @@ sub findBestRecord {
       $count++ if($peptideLocations->{$peptideSequence});
     }
 
+    next unless($count > 0);
+
     my $matchPct = ($count / $peptideCount) * 100;
 
     if($matchPct >= $minPeptidePct) {

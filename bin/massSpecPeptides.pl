@@ -134,7 +134,7 @@ sub writeGenomeGffOutput {
       }
 
       # Create parent ID
-      my $parentId = "${runName}_${genomicSequenceSourceId}_${minStart}_${maxEnd}_parent";
+      my $parentId = "${runName}_${sampleName}_${genomicSequenceSourceId}_${minStart}_${maxEnd}_parent";
 
       # Create and write parent feature
       my $parentFeature = new Bio::SeqFeature::Generic(
@@ -157,7 +157,7 @@ sub writeGenomeGffOutput {
 
       # Create and write child features for each mapped location
       foreach my $loc (@mappedLocations) {
-        my $childId = "${runName}_${genomicSequenceSourceId}_" . $loc->start . "_" . $loc->end;
+        my $childId = "${runName}_${sampleName}_${genomicSequenceSourceId}_" . $loc->start . "_" . $loc->end;
 
         my $childFeature = new Bio::SeqFeature::Generic(
           -start      => $loc->start,

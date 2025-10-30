@@ -50,7 +50,8 @@ process massSpecPeptides {
    --proteinFastaFile $params.proteinFastaFile \
    --recordMinPeptidePct 50 \
    --inputAnnotationGff $params.annotationGff \
-   --sampleName $sampleName
+   --sampleName $sampleName \
+   --runName ${workflow.runName}
   """
 }
 

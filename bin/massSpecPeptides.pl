@@ -12,7 +12,7 @@ use Bio::Coordinate::GeneMapper;
 
 use Data::Dumper;
 
-my ($sampleFile, $genomicGff, $proteinFastaFile, $minPeptidePct, $proteinGff, $inputAnnotationGff, $sampleName);
+my ($sampleFile, $genomicGff, $proteinFastaFile, $minPeptidePct, $proteinGff, $inputAnnotationGff, $sampleName, $runName);
 
 &GetOptions ("sampleFile=s" => \$sampleFile,
              "proteinFastaFile=s" => \$proteinFastaFile,
@@ -20,7 +20,8 @@ my ($sampleFile, $genomicGff, $proteinFastaFile, $minPeptidePct, $proteinGff, $i
              "outputProteinGffFile=s" => \$proteinGff,
              "outputGenomicGffFile=s" => \$genomicGff,
              "inputAnnotationGff=s" => \$inputAnnotationGff,
-             "sampleName=s" => \$sampleName
+             "sampleName=s" => \$sampleName,
+             "runName=s" => \$runName
     );
 
 
@@ -53,7 +54,7 @@ while (my $seq = $seqio->next_seq) {
 
   my ($genomicSequenceSourceId, $mapper) = &getProteinToGenomicCoordMapper($locations);
 
-  &writeGenomeGffOutput($genomicGffFh, $msRecordWithPeptideLocations, $genomicSequenceSourceId, $mapper, $sampleName);
+  &writeGenomeGffOutput($genomicGffFh, $msRecordWithPeptideLocations, $genomicSequenceSourceId, $mapper, $sampleName, $runName);
 
   if($proteinCount++ % 500 == 0) {
     print STDERR "Processed $proteinCount Proteins", "\n";
@@ -103,7 +104,7 @@ sub makeProteinGenomeCoordinatesHash {
 }
 
 sub writeGenomeGffOutput {
-  my ($genomicGffFh, $record, $genomicSequenceSourceId, $mapper, $sampleName) = @_;
+  my ($genomicGffFh, $record, $genomicSequenceSourceId, $mapper, $sampleName, $runName) = @_;
 
   foreach my $peptide (@{$record->{peptides}}) {
     my $peptideSequence = $peptide->get("sequence");
@@ -120,25 +121,58 @@ sub writeGenomeGffOutput {
       my $map = $mapper->map($peptideCoords);
       return undef if ! $map;
 
-      foreach (sort { $a->start <=> $b->start } $map->each_Location ) {
+      # Collect all mapped locations for this peptide location
+      my @mappedLocations = sort { $a->start <=> $b->start } $map->each_Location;
+      next unless @mappedLocations;
 
-        my $genomicPeptide = new Bio::SeqFeature::Generic(
-          -start      => $_->start,
-          -end        => $_->end,
-          -strand     => $_->strand,
-          -primary    => 'ms_peptide',
+      # Find min start and max end for the parent feature across all mapped locations
+      my ($minStart, $maxEnd, $strand);
+      foreach my $loc (@mappedLocations) {
+        $minStart = $loc->start if !defined($minStart) || $loc->start < $minStart;
+        $maxEnd = $loc->end if !defined($maxEnd) || $loc->end > $maxEnd;
+        $strand = $loc->strand if !defined($strand);
+      }
+
+      # Create parent ID
+      my $parentId = "${runName}_${sampleName}_${genomicSequenceSourceId}_${minStart}_${maxEnd}_parent";
+
+      # Create and write parent feature
+      my $parentFeature = new Bio::SeqFeature::Generic(
+        -start      => $minStart,
+        -end        => $maxEnd,
+        -strand     => $strand,
+        -primary    => 'ms_peptide',
+        -source_tag => $GFF_SOURCE,
+        -seq_id     => $genomicSequenceSourceId,
+        -tag        => {
+          ID => $parentId,
+          ions_score => $ionsScore,
+          spectrum_count => $spectrumCount,
+          sample_name => $sampleName,
+          peptide => $peptideSequence,
+        });
+
+      $parentFeature->gff_format(Bio::Tools::GFF->new(-gff_version => 3));
+      print $genomicGffFh $parentFeature->gff_string(), "\n";
+
+      # Create and write child features for each mapped location
+      foreach my $loc (@mappedLocations) {
+        my $childId = "${runName}_${sampleName}_${genomicSequenceSourceId}_" . $loc->start . "_" . $loc->end;
+
+        my $childFeature = new Bio::SeqFeature::Generic(
+          -start      => $loc->start,
+          -end        => $loc->end,
+          -strand     => $loc->strand,
+          -primary    => 'align',
           -source_tag => $GFF_SOURCE,
           -seq_id     => $genomicSequenceSourceId,
           -tag        => {
-            ions_score => $ionsScore,
-            spectrum_count => $spectrumCount,
-            sample_name => $sampleName,
-            peptide => $peptideSequence,
+            ID => $childId,
+            Parent => $parentId,
           });
 
-        $genomicPeptide->gff_format(Bio::Tools::GFF->new(-gff_version => 3));
-
-        print $genomicGffFh $genomicPeptide->gff_string(), "\n";
+        $childFeature->gff_format(Bio::Tools::GFF->new(-gff_version => 3));
+        print $genomicGffFh $childFeature->gff_string(), "\n";
       }
     }
   }

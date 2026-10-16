@@ -6,25 +6,21 @@ include { indexResults as indexProteins } from './modules/utils.nf'
 include { indexResults as indexGenome } from './modules/utils.nf'
 
 //--------------------------------------------------------------------------
-// Factory for input files
-//--------------------------------------------------------------------------
-
-if(params.inputDirectory) {
-  samples = Channel.fromPath( params.inputDirectory + "/*" )
-    .map { file ->
-      def basename = file.getBaseName()
-      return tuple(basename, file)
-    }
-}
-else {
-  throw new Exception("Missing params.inputDirectory")
-}
-
-//--------------------------------------------------------------------------
 // Main Workflow
 //--------------------------------------------------------------------------
 
 workflow {
+  if(params.inputDirectory) {
+    samples = channel.fromPath( params.inputDirectory + "/*" )
+      .map { file ->
+        def basename = file.getBaseName()
+        return tuple(basename, file)
+      }
+  }
+  else {
+    error "Missing params.inputDirectory"
+  }
+
   res = massSpecPeptides(samples);
 
   indexProteins(res.protein_gff.collectFile(), params.proteinGffFileName)
